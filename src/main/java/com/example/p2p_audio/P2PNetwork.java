@@ -1,12 +1,13 @@
 package com.example.p2p_audio;
 
+import javafx.scene.media.AudioSpectrumListener;
+
+import java.io.IOException;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
-import java.nio.channels.MembershipKey;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.io.*;
+import java.util.Arrays;
+import java.util.Set;
 
 public class P2PNetwork {
 
@@ -17,23 +18,21 @@ public class P2PNetwork {
      * PeerDiscovery object - the PeerDiscovery class is used to broadcast a message on the network where the application is running, whenever a new peer joins the
      * network, in order for the stream information to be shared between all nodes
      */
-    private String localAddress;
-    private int port;
-    private ServerSocket serverSocket;
-    private Thread listenerThread;
-    private PeerDiscovery peerDiscovery;
+    private final String localAddress;
+    private final int port;
+    private final ServerSocket serverSocket;
+    private final Thread listenerThread;
+    private final PeerDiscovery peerDiscovery;
 
-    public P2PNetwork(String localAddress, int port) throws IOException {
+    public P2PNetwork(String localAddress, int port) throws Exception {
         this.localAddress = localAddress;
         this.port = port;
         this.serverSocket = new ServerSocket(port);
         this.peerDiscovery = new PeerDiscovery(port);
         this.listenerThread = new Thread(new ConnectionListener());
         this.listenerThread.start();
-    }
 
-    public void discoverPeers() throws Exception {
-        this.peerDiscovery.start();
+        peerDiscovery.start();
     }
 
     private class ConnectionListener implements Runnable {
@@ -55,69 +54,55 @@ public class P2PNetwork {
     }
 
     public class PeerDiscovery {
-        private int port;
-        private String discoveryMessage;
+        private final int port;
+        private final String discoveryMessage;
         private Thread thread;
         private boolean running;
+        private Set<InetAddress> peers;
+        private InetAddress group;
+
+        private static final int PORT = 55123;
+        private static final int BUFFER_SIZE = 1024;
+        private static final String DISCOVERY_MESSAGE = "AudioStream_Discovery_Message";
+
+        private DatagramChannel datagramChannel;
+        private AudioSpectrumListener audioSpectrumListener;
+        private InetAddress broadcastAddress;
+        private InetAddress localAddress;
+        private boolean isStreaming;
 
         public PeerDiscovery(int port) {
             this.port = port;
-            this.discoveryMessage = "P2PNetworkDiscovery:" + port;
+            this.discoveryMessage = "ANYONE_STREAMING" + port;
         }
 
         public void start() throws Exception {
-            // Create a datagram channel
-            DatagramChannel channel = DatagramChannel.open();
-            channel.configureBlocking(false);
-            channel.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+            // Broadcast a discovery message to find out if there are other hosts on the network
+            ByteBuffer buffer = ByteBuffer.wrap(discoveryMessage.getBytes());
+            datagramChannel.send(buffer, new InetSocketAddress(broadcastAddress, PORT));
 
-            // Bind the channel to the multicast address and port
-            InetAddress group = InetAddress.getByName("224.0.0.1");
-            channel.bind(new InetSocketAddress(group, port));
+            // Listen for responses to the discovery message
+            DatagramSocket datagramSocket = new DatagramSocket(PORT);
+            byte[] responseBuffer = new byte[BUFFER_SIZE];
+            DatagramPacket responsePacket = new DatagramPacket(responseBuffer, responseBuffer.length);
 
-            // Join the multicast group
-            NetworkInterface networkInterface = NetworkInterface.getByInetAddress(InetAddress.getByName(localAddress));
-            MembershipKey key = channel.join(group, networkInterface);
+            boolean isFirstOnNetwork = true;
+            while (isFirstOnNetwork) {
+                Arrays.fill(responseBuffer, (byte) 0);
+                datagramSocket.receive(responsePacket);
 
-            // Get the IP address of the network interface
-            InetAddress interfaceAddress = null;
-
-
-            // Start the discovery thread
-            running = true;
-            thread = new Thread(() -> {
-                while (running) {
-                    try {
-                        // Check if any datagrams are available
-                        Selector selector = Selector.open();
-                        channel.register(selector, SelectionKey.OP_READ);
-                        selector.select();
-
-                        // Read incoming datagrams
-                        ByteBuffer buffer = ByteBuffer.allocate(1024);
-                        SocketAddress address = channel.receive(buffer);
-                        buffer.flip();
-                        String message = new String(buffer.array(), 0, buffer.limit());
-
-                        // Check if the message is a discovery message
-                        if (message.equals(discoveryMessage)) {
-                            // Send a response message with network information
-                            String responseMessage = "P2PNetworkResponse:" + interfaceAddress.getHostAddress() + ":" + port;
-                            ByteBuffer responseBuffer = ByteBuffer.wrap(responseMessage.getBytes());
-                            channel.send(responseBuffer, address);
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
+                String message = new String(responsePacket.getData()).trim();
+                if (DISCOVERY_MESSAGE.equals(message)) {
+                    // If another host responds to the discovery message, then this host is not the first on the network
+                    isFirstOnNetwork = false;
                 }
-            });
-            thread.start();
+            }
         }
 
-        public void stop() {
-            // Stop the discovery thread
-            running = false;
-            thread.interrupt();
+            public void stop () {
+                // Stop the discovery thread
+                running = false;
+                thread.interrupt();
+            }
         }
     }
-}
